@@ -1,9 +1,11 @@
 """Git operations service for autowt."""
 
 import logging
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
+from autowt.config import get_config
 from autowt.models import BranchStatus, WorktreeInfo
 from autowt.prompts import confirm_default_no
 from autowt.utils import run_command, run_command_quiet_on_failure, run_command_visible
@@ -14,26 +16,34 @@ logger = logging.getLogger(__name__)
 class GitCommands:
     """Low-level git command construction."""
 
-    @staticmethod
-    def worktree_add_existing(worktree_path: Path, branch: str) -> list[str]:
-        """Build command to add worktree for existing branch."""
-        return ["git", "worktree", "add", str(worktree_path), branch]
+    def __init__(self, prefer_coworktree: bool) -> None:
+        self._use_coworktree = prefer_coworktree and bool(shutil.which("coworktree"))
 
-    @staticmethod
+    def _wrap_worktree_command(self, cmd: list[str]) -> list[str]:
+        """Swap `git worktree` with `coworktree` when available."""
+        if self._use_coworktree and cmd[:2] == ["git", "worktree"]:
+            return ["coworktree", *cmd[2:]]
+        return cmd
+
+    def worktree_add_existing(self, worktree_path: Path, branch: str) -> list[str]:
+        """Build command to add worktree for existing branch."""
+        cmd = ["git", "worktree", "add", str(worktree_path), branch]
+        return self._wrap_worktree_command(cmd)
+
     def worktree_add_new_branch(
-        worktree_path: Path, branch: str, start_point: str
+        self, worktree_path: Path, branch: str, start_point: str
     ) -> list[str]:
         """Build command to add worktree with new branch from start point."""
-        return ["git", "worktree", "add", str(worktree_path), "-b", branch, start_point]
+        cmd = ["git", "worktree", "add", str(worktree_path), "-b", branch, start_point]
+        return self._wrap_worktree_command(cmd)
 
-    @staticmethod
-    def worktree_remove(worktree_path: Path, force: bool = False) -> list[str]:
+    def worktree_remove(self, worktree_path: Path, force: bool = False) -> list[str]:
         """Build command to remove worktree."""
         cmd = ["git", "worktree", "remove"]
         if force:
             cmd.append("--force")
         cmd.append(str(worktree_path))
-        return cmd
+        return self._wrap_worktree_command(cmd)
 
     @staticmethod
     def branch_exists_locally(branch: str) -> list[str]:
@@ -57,8 +67,8 @@ class GitCommands:
 class BranchResolver:
     """Resolves branch existence and determines worktree creation strategy."""
 
-    def __init__(self, git_service):
-        self.commands = GitCommands()
+    def __init__(self, git_service, commands: GitCommands):
+        self.commands = commands
         self.git_service = git_service
 
     def resolve_worktree_source(
@@ -259,8 +269,16 @@ class GitService:
 
     def __init__(self):
         """Initialize git service."""
-        self.commands = GitCommands()
-        self.branch_resolver = BranchResolver(self)
+        prefer_coworktree = True
+        try:
+            prefer_coworktree = get_config().worktree.prefer_coworktree
+        except RuntimeError:
+            # Config may not be initialized in some contexts (e.g., early tests).
+            # Default behavior is to prefer coworktree.
+            pass
+
+        self.commands = GitCommands(prefer_coworktree=prefer_coworktree)
+        self.branch_resolver = BranchResolver(self, self.commands)
         self.parser = GitOutputParser()
         logger.debug("Git service initialized")
 
@@ -776,7 +794,7 @@ class GitService:
             branch_hash = self._get_commit_hash(repo_path, branch)
             default_hash = self._get_commit_hash(repo_path, default_branch)
 
-            return branch_hash and default_hash and branch_hash == default_hash
+            return bool(branch_hash and default_hash and branch_hash == default_hash)
         except Exception:
             return False
 
