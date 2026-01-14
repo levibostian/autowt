@@ -203,6 +203,7 @@ class TestConfigToDict:
                 "directory_pattern": "../{repo_name}-worktrees/{branch}",
                 "auto_fetch": True,
                 "branch_prefix": None,
+                "prefer_coworktree": True,
             },
             "cleanup": {
                 "default_mode": "interactive",
